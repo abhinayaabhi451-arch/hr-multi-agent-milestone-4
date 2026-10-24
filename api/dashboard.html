@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HR Platform Monitor</title>
+<style>
+  :root {
+    --bg:#f6f7f9; --card:#fff; --text:#1c2230; --muted:#667085; --line:#e4e7ec;
+    --accent:#3b5bdb; --ok:#2f9e44; --bad:#e03131; --warn:#e8890c;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12151c; --card:#1b1f2a; --text:#e8ebf2; --muted:#98a2b3; --line:#2b3140;
+            --accent:#7c93ff; --ok:#51cf66; --bad:#ff6b6b; --warn:#ffa94d; }
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text);
+         font:14px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { display:flex; flex-wrap:wrap; gap:12px; align-items:center; justify-content:space-between;
+           padding:16px 20px; border-bottom:1px solid var(--line); background:var(--card); }
+  h1 { font-size:18px; margin:0; }
+  h2 { font-size:13px; margin:0 0 10px; color:var(--muted); text-transform:uppercase; letter-spacing:.05em; }
+  .controls { display:flex; gap:8px; align-items:center; color:var(--muted); font-size:12px; }
+  input { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:6px;
+          padding:6px 8px; font:inherit; }
+  main { padding:16px 20px; max-width:1200px; margin:0 auto; display:grid; gap:16px; }
+  .tiles { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto; }
+  .tile .v { font-size:26px; font-weight:650; font-variant-numeric:tabular-nums; }
+  .tile .l { color:var(--muted); font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-variant-numeric:tabular-nums; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); white-space:nowrap; }
+  th { color:var(--muted); font-weight:500; font-size:12px; }
+  td.n, th.n { text-align:right; }
+  .pill { display:inline-block; padding:1px 8px; border-radius:99px; font-size:12px; border:1px solid currentColor; }
+  .succeeded,.ok { color:var(--ok); } .failed,.bad,.rolled_back { color:var(--bad); }
+  .running { color:var(--accent); } .skipped,.cancelled,.pending,.compensated { color:var(--muted); }
+  .steps { display:flex; gap:4px; flex-wrap:wrap; }
+  .steps span { font-size:11px; padding:1px 6px; border-radius:4px; border:1px solid currentColor; }
+  .bar { height:6px; border-radius:3px; background:var(--line); min-width:60px; }
+  .bar > i { display:block; height:100%; border-radius:3px; background:var(--accent); }
+  .empty { color:var(--muted); padding:8px 0; }
+  #status { font-size:12px; } .two { display:grid; grid-template-columns:repeat(auto-fit,minmax(380px,1fr)); gap:16px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>HR Platform Monitor</h1>
+  <div class="controls">
+    <label>API key <input id="key" type="password" placeholder="only if API_KEY is set" size="18"></label>
+    <span id="status">connecting...</span>
+  </div>
+</header>
+<main>
+  <section class="tiles" id="tiles"></section>
+  <section class="card"><h2>Latency by endpoint / agent / workflow</h2><div id="latency"></div></section>
+  <div class="two">
+    <section class="card"><h2>Recent workflow runs</h2><div id="runs"></div></section>
+    <section class="card"><h2>Recent activity</h2><div id="events"></div></section>
+  </div>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const fmtUp = s => s < 90 ? Math.round(s)+'s' : s < 5400 ? Math.round(s/60)+'m' : (s/3600).toFixed(1)+'h';
+
+$('key').value = (() => { try { return sessionStorage.getItem('hrkey') || ''; } catch { return ''; } })();
+$('key').addEventListener('change', e => { try { sessionStorage.setItem('hrkey', e.target.value); } catch {} refresh(); });
+
+function tile(v, l, cls='') { return `<div class="card tile"><div class="v ${cls}">${esc(v)}</div><div class="l">${esc(l)}</div></div>`; }
+
+function render(d) {
+  const errCls = d.error_rate > 0.05 ? 'bad' : 'ok';
+  $('tiles').innerHTML =
+    tile(d.total_requests, 'Total requests') +
+    tile((d.error_rate*100).toFixed(1)+'%', 'Error rate', errCls) +
+    tile(d.active_sessions, 'Active sessions') +
+    tile(Object.values(d.workflow_runs).reduce((a,b)=>a+b,0), 'Workflow runs') +
+    tile(fmtUp(d.uptime_seconds), 'Uptime');
+
+  const keys = Object.entries(d.by_key).sort((a,b) => b[1].count - a[1].count);
+  const maxP95 = Math.max(1, ...keys.map(([,s]) => s.p95_ms));
+  $('latency').innerHTML = keys.length ? `<table><tr><th>Name</th><th class="n">Requests</th><th class="n">Errors</th>
+    <th class="n">Avg ms</th><th class="n">p50</th><th class="n">p95</th><th class="n">Max</th><th>p95</th></tr>` +
+    keys.map(([k,s]) => `<tr><td>${esc(k)}</td><td class="n">${s.count}</td>
+      <td class="n ${s.errors ? 'bad':''}">${s.errors}</td><td class="n">${s.avg_ms}</td>
+      <td class="n">${s.p50_ms}</td><td class="n">${s.p95_ms}</td><td class="n">${s.max_ms}</td>
+      <td><div class="bar"><i style="width:${Math.max(2, s.p95_ms/maxP95*100)}%"></i></div></td></tr>`).join('') + '</table>'
+    : '<div class="empty">No traffic yet.</div>';
+
+  const runs = d.recent_workflow_runs;
+  $('runs').innerHTML = runs.length ? `<table><tr><th>Workflow</th><th>Status</th><th class="n">ms</th><th>Steps</th></tr>` +
+    runs.map(r => `<tr><td>${esc(r.workflow)}<div style="color:var(--muted);font-size:11px">${esc(r.run_id)}</div></td>
+      <td><span class="pill ${r.status}">${r.status}</span></td><td class="n">${r.duration_ms ?? '...'}</td>
+      <td><div class="steps">${Object.entries(r.step_status).map(([n,s]) => `<span class="${s}" title="${esc(n)}: ${s}">${esc(n)}</span>`).join('')}</div></td></tr>`).join('') + '</table>'
+    : '<div class="empty">No workflow runs yet.</div>';
+
+  $('events').innerHTML = d.recent_events.length ? `<table><tr><th>Time</th><th>Name</th><th class="n">ms</th><th>Result</th></tr>` +
+    d.recent_events.map(e => `<tr><td>${e.time}</td><td>${esc(e.key)}</td><td class="n">${e.ms}</td>
+      <td><span class="${e.ok ? 'ok':'bad'}">${e.ok ? 'ok' : 'error'}</span> <span style="color:var(--muted)">${esc(e.detail)}</span></td></tr>`).join('') + '</table>'
+    : '<div class="empty">No activity yet.</div>';
+}
+
+async function refresh() {
+  const headers = {}; const k = $('key').value; if (k) headers['X-API-Key'] = k;
+  try {
+    const r = await fetch('/api/stats', {headers});
+    if (r.status === 401) { $('status').textContent = 'API key required'; return; }
+    if (!r.ok) throw new Error(r.status);
+    render(await r.json());
+    $('status').textContent = 'live - updated ' + new Date().toLocaleTimeString();
+  } catch (e) { $('status').textContent = 'disconnected (' + e.message + ')'; }
+}
+refresh(); setInterval(refresh, 3000);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+services:
+  hr-platform:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file: .env
+    environment:
+      KNOWLEDGE_STORE_PATH: /data/knowledge_store.json
+    volumes:
+      - hr-data:/data
+    restart: unless-stopped
+
+volumes:
+  hr-data:

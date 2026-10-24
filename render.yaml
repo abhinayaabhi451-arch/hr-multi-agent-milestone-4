@@ -1,0 +1,16 @@
+# Render.com blueprint: New > Blueprint > connect the repo.
+services:
+  - type: web
+    name: hr-multi-agent
+    runtime: docker
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: GOOGLE_API_KEY
+        sync: false          # paste in the dashboard, never commit it
+      - key: API_KEY
+        generateValue: true
+      - key: RATE_LIMIT_PER_MIN
+        value: "120"
+      - key: KNOWLEDGE_STORE_PATH
+        value: /tmp/knowledge_store.json   # use a persistent disk (paid plan) at /data for durability
